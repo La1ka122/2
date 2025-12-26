@@ -1,3 +1,1 @@
 pyTelegramBotAPI==4.14.0
-mega.py==1.0.8
-tenacity<8.3
