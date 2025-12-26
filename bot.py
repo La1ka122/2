@@ -1,18 +1,43 @@
 import telebot
-from mega import Mega
+import subprocess
 import os
+import json
+import uuid
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
-bot = telebot.TeleBot(BOT_TOKEN)
-mega = Mega()
-m = mega.login()
-
-DOWNLOAD_DIR = "downloads"
 MAX_SIZE_MB = 500
 MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
+DOWNLOAD_DIR = "/tmp/downloads"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+def get_mega_info(url: str):
+    """
+    Получаем информацию о файле через megatools
+    """
+    result = subprocess.run(
+        ["megatools", "ls", url, "--json"],
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise Exception(result.stderr)
+
+    data = json.loads(result.stdout)
+    file_info = data[0]
+
+    return file_info["name"], int(file_info["size"])
+
+def download_mega(url: str, path: str):
+    subprocess.check_call([
+        "megatools",
+        "dl",
+        "--path", path,
+        url
+    ])
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -29,29 +54,29 @@ def handle_mega(message):
     status = bot.send_message(chat_id, "🔍 Проверяю файл...")
 
     try:
-        # Получаем инфу о файле
-        info = m.get_public_url_info(url)
-        file_size = info["size"]
-        file_name = info["name"]
+        filename, size = get_mega_info(url)
 
-        if file_size > MAX_SIZE_BYTES:
+        if size > MAX_SIZE_BYTES:
             bot.edit_message_text(
                 f"❌ Файл слишком большой\n"
-                f"Размер: {file_size / 1024 / 1024:.2f} МБ\n"
+                f"Размер: {size / 1024 / 1024:.2f} МБ\n"
                 f"Лимит: {MAX_SIZE_MB} МБ",
                 chat_id,
                 status.message_id
             )
             return
 
+        tmp_name = f"{uuid.uuid4()}_{filename}"
+        file_path = os.path.join(DOWNLOAD_DIR, tmp_name)
+
         bot.edit_message_text(
-            f"⬇ Скачиваю `{file_name}`...",
+            f"⬇ Скачиваю `{filename}`...",
             chat_id,
             status.message_id,
             parse_mode="Markdown"
         )
 
-        file_path = m.download_url(url, DOWNLOAD_DIR)
+        download_mega(url, file_path)
 
         with open(file_path, "rb") as f:
             bot.send_document(chat_id, f)
@@ -59,7 +84,7 @@ def handle_mega(message):
         os.remove(file_path)
 
         bot.edit_message_text(
-            f"✅ Файл `{file_name}` отправлен и удалён",
+            f"✅ Файл `{filename}` отправлен и удалён",
             chat_id,
             status.message_id,
             parse_mode="Markdown"
@@ -72,3 +97,5 @@ def handle_mega(message):
             status.message_id,
             parse_mode="Markdown"
         )
+
+bot.polling(none_stop=True)
