@@ -1,49 +1,21 @@
 import telebot
 import subprocess
 import os
-import json
 import uuid
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-MAX_SIZE_MB = 500
-MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
-DOWNLOAD_DIR = "/tmp/downloads"
-
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
 bot = telebot.TeleBot(BOT_TOKEN)
 
-def get_mega_info(url: str):
-    """
-    Получаем информацию о файле через megatools
-    """
-    result = subprocess.run(
-        ["megatools", "ls", url, "--json"],
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        raise Exception(result.stderr)
-
-    data = json.loads(result.stdout)
-    file_info = data[0]
-
-    return file_info["name"], int(file_info["size"])
-
-def download_mega(url: str, path: str):
-    subprocess.check_call([
-        "megatools",
-        "dl",
-        "--path", path,
-        url
-    ])
+CHUNK_SIZE = 500 * 1024 * 1024  # 500 MB
+TMP_DIR = "/tmp/mega_parts"
+os.makedirs(TMP_DIR, exist_ok=True)
 
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
-        "Отправь ссылку на файл с mega.nz (до 500 МБ)"
+        "Отправь ссылку на mega.nz\n"
+        "Файлы будут отправляться частями по 500 МБ"
     )
 
 @bot.message_handler(func=lambda m: m.text and "mega.nz" in m.text)
@@ -51,51 +23,68 @@ def handle_mega(message):
     chat_id = message.chat.id
     url = message.text.strip()
 
-    status = bot.send_message(chat_id, "🔍 Проверяю файл...")
+    status = bot.send_message(chat_id, "🚀 Начинаю загрузку...")
 
     try:
-        filename, size = get_mega_info(url)
-
-        if size > MAX_SIZE_BYTES:
-            bot.edit_message_text(
-                f"❌ Файл слишком большой\n"
-                f"Размер: {size / 1024 / 1024:.2f} МБ\n"
-                f"Лимит: {MAX_SIZE_MB} МБ",
-                chat_id,
-                status.message_id
-            )
-            return
-
-        tmp_name = f"{uuid.uuid4()}_{filename}"
-        file_path = os.path.join(DOWNLOAD_DIR, tmp_name)
-
-        bot.edit_message_text(
-            f"⬇ Скачиваю `{filename}`...",
-            chat_id,
-            status.message_id,
-            parse_mode="Markdown"
+        process = subprocess.Popen(
+            ["mega-get", url, "--stdout"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
         )
 
-        download_mega(url, file_path)
+        part = 1
+        current_size = 0
+        part_path = os.path.join(TMP_DIR, f"part_{part}.bin")
+        f = open(part_path, "wb")
 
-        with open(file_path, "rb") as f:
-            bot.send_document(chat_id, f)
+        while True:
+            chunk = process.stdout.read(1024 * 1024)  # 1 MB
+            if not chunk:
+                break
 
-        os.remove(file_path)
+            f.write(chunk)
+            current_size += len(chunk)
+
+            if current_size >= CHUNK_SIZE:
+                f.close()
+                send_part(chat_id, part_path, part)
+                os.remove(part_path)
+
+                part += 1
+                current_size = 0
+                part_path = os.path.join(TMP_DIR, f"part_{part}.bin")
+                f = open(part_path, "wb")
+
+        f.close()
+
+        if os.path.exists(part_path) and os.path.getsize(part_path) > 0:
+            send_part(chat_id, part_path, part)
+            os.remove(part_path)
 
         bot.edit_message_text(
-            f"✅ Файл `{filename}` отправлен и удалён",
+            "✅ Загрузка завершена",
             chat_id,
-            status.message_id,
-            parse_mode="Markdown"
+            status.message_id
         )
 
     except Exception as e:
         bot.edit_message_text(
-            f"❌ Ошибка:\n`{e}`",
+            f"❌ Ошибка:\n{e}",
             chat_id,
-            status.message_id,
-            parse_mode="Markdown"
+            status.message_id
         )
 
-bot.polling(none_stop=True)
+def send_part(chat_id, path, part):
+    with open(path, "rb") as f:
+        bot.send_document(
+            chat_id,
+            f,
+            caption=f"📦 Часть {part}"
+        )
+
+if __name__ == "__main__":
+    bot.polling(
+        none_stop=True,
+        timeout=30,
+        skip_pending=True
+    )
