@@ -1,9 +1,13 @@
 FROM python:3.11-slim
 
+# Устанавливаем зависимости
 RUN apt-get update && \
-    apt-get install -y wget ca-certificates && \
-    wget https://mega.nz/linux/repo/Debian_11/amd64/megacmd_1.6.3-1_amd64.deb && \
-    apt-get install -y ./megacmd_1.6.3-1_amd64.deb && \
+    apt-get install -y curl gnupg ca-certificates && \
+    curl -fsSL https://mega.nz/linux/repo/xUbuntu_22.04/Release.key | gpg --dearmor > /usr/share/keyrings/mega.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/mega.gpg] https://mega.nz/linux/repo/xUbuntu_22.04/ /" \
+        > /etc/apt/sources.list.d/mega.list && \
+    apt-get update && \
+    apt-get install -y megacmd wget && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
